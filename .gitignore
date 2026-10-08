@@ -1,0 +1,37 @@
+# Local environment and tooling
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+
+# CCTV source media, generated frames, detections, evidence, and local records
+/data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Model weights and generated inference artifacts
+*.pt
+*.pth
+*.onnx
+*.engine
+*.weights
+
+# Credentials and private key material
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Common local build output
+build/
+dist/
