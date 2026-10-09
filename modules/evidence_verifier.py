@@ -1,15 +1,13 @@
 
-import json
 import hashlib
+import json
 from pathlib import Path
 from datetime import datetime, timezone
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 EVIDENCE_DIR = PROJECT_DIR / "data" / "evidence"
 VIDEO_DIR = PROJECT_DIR / "data" / "videos"
-AUDIT_DIR = PROJECT_DIR / "data" / "audit_logs"
-
-AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+AUDIT_FILE = PROJECT_DIR / "data" / "audit_logs" / "integrity_checks.jsonl"
 
 
 def calculate_sha256(file_path):
@@ -22,58 +20,78 @@ def calculate_sha256(file_path):
     return sha256.hexdigest()
 
 
-def verify_video(record_path):
+def verify_video(record_path, video_path=None):
     with open(record_path, "r", encoding="utf-8") as file:
         record = json.load(file)
 
-    video_path = VIDEO_DIR / record["video_name"]
+    original_hash = record["sha256"]
+    video_name = record["video_name"]
+
+    if video_path is None:
+        video_path = VIDEO_DIR / video_name
+    else:
+        video_path = Path(video_path)
+
+    if not video_path.is_absolute():
+        video_path = PROJECT_DIR / video_path
 
     if not video_path.exists():
-        result = {
-            "video_name": record["video_name"],
-            "status": "FILE_NOT_FOUND",
-            "message": "The original video could not be found."
-        }
+        status = "FILE_NOT_FOUND"
+        current_hash = None
     else:
-        original_hash = record["sha256"]
         current_hash = calculate_sha256(video_path)
-        matches = original_hash == current_hash
+        status = "MATCH" if current_hash == original_hash else "MISMATCH"
 
-        result = {
-            "video_name": record["video_name"],
-            "recorded_sha256": original_hash,
-            "current_sha256": current_hash,
-            "status": "MATCH" if matches else "MISMATCH",
-            "message": (
-                "The file matches the recorded hash."
-                if matches
-                else "The file differs from the recorded baseline."
-            )
-        }
+    result = {
+        "checked_at_utc": datetime.now(timezone.utc).isoformat(),
+        "baseline_record": str(record_path),
+        "checked_file": str(video_path),
+        "original_sha256": original_hash,
+        "current_sha256": current_hash,
+        "status": status
+    }
 
-    result["checked_at_utc"] = datetime.now(timezone.utc).isoformat()
+    AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    log_path = AUDIT_DIR / "integrity_checks.jsonl"
-
-    with open(log_path, "a", encoding="utf-8") as file:
+    with open(AUDIT_FILE, "a", encoding="utf-8") as file:
         file.write(json.dumps(result) + "\n")
 
-    print("\nEVIDENCE INTEGRITY CHECK")
-    print("------------------------")
-    print("Video:", result["video_name"])
-    print("Status:", result["status"])
-    print("Result:", result["message"])
-    print("Audit log:", log_path)
+    print(f"File checked: {video_path.name}")
+    print(f"Status: {status}")
+
+    if status == "MATCH":
+        print("The file matches the saved baseline hash.")
+    elif status == "MISMATCH":
+        print("The file differs from the saved baseline hash.")
+    else:
+        print("The file could not be found.")
 
     return result
 
 
 if __name__ == "__main__":
-    record_files = sorted(
-        path for path in EVIDENCE_DIR.glob("*_record.json")
-    )
+    records = list(EVIDENCE_DIR.glob("*_record.json"))
 
-    if not record_files:
-        print("No original evidence record found.")
+    if not records:
+        print("No evidence records found.")
     else:
-        verify_video(record_files[0])
+        print("Available evidence records:")
+        for index, record in enumerate(records, start=1):
+            print(f"{index}. {record.name}")
+
+        choice = int(input("Select a record number: "))
+        selected_record = records[choice - 1]
+
+        print("\n1. Verify the original video")
+        print("2. Verify a test copy")
+        option = input("Choose an option: ").strip()
+
+        if option == "1":
+            verify_video(selected_record)
+        elif option == "2":
+            copy_path = input(
+                "Enter the test copy path (e.g. data/videos/test_copy.mp4): "
+            ).strip()
+            verify_video(selected_record, copy_path)
+        else:
+            print("Invalid option.")
