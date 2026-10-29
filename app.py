@@ -9,10 +9,7 @@ import pandas as pd
 import streamlit as st
 
 
-from modules.rag_engine import (
-    search_events,
-    generate_investigation_summary
-)
+from modules.rag_engine import get_videos, answer_question
 
 # --------------------------------------------------
 # PROJECT PATHS
@@ -291,9 +288,11 @@ with tab2:
                             st.info("No detected object classes are available.")
 
                         else:
+                            class_options = ["All classes"] + list(class_values)
+
                             selected_class = st.selectbox(
                                 "Object to search for",
-                                class_values
+                                class_options
                             )
 
                             min_time, max_time = pd.read_sql_query(
@@ -317,19 +316,40 @@ with tab2:
                                 value=(min_time, slider_max)
                             )
 
+                            
+                            
                             if st.button("Search Events"):
-                                results = pd.read_sql_query(
-                                    f'SELECT * FROM detections '
-                                    f'WHERE "{class_col}" = ? '
-                                    f'AND "{time_col}" BETWEEN ? AND ? '
-                                    f'ORDER BY "{time_col}"',
-                                    connection,
-                                    params=(
-                                        selected_class,
-                                        start_time,
-                                        end_time
+                                if selected_class == "All classes":
+                                    results = pd.read_sql_query(
+                                        f'SELECT * FROM detections '
+                                        f'WHERE "{time_col}" BETWEEN ? AND ? '
+                                        f'ORDER BY "{time_col}"',
+                                        connection,
+                                        params=(start_time, end_time)
                                     )
-                                )
+                                else:
+                                    results = pd.read_sql_query(
+                                        f'SELECT * FROM detections '
+                                        f'WHERE LOWER(TRIM("{class_col}")) = LOWER(TRIM(?)) '
+                                        f'AND "{time_col}" BETWEEN ? AND ? '
+                                        f'ORDER BY "{time_col}"',
+                                        connection,
+                                        params=(selected_class, start_time, end_time)
+                                    )
+
+                                st.subheader(f"Search Results: {len(results)} detections")
+
+                                if results.empty:
+                                    st.info("No detections found for this search.")
+                                else:
+                                    st.dataframe(
+                                        results,
+                                        use_container_width=True,
+                                        hide_index=True
+                                    )
+
+        
+
 
                                 st.subheader(
                                     f"Search Results: {len(results)} detections"
@@ -348,61 +368,46 @@ with tab2:
                                     )
 
                                     for _, row in results.iterrows():
-                                        original_relative_path = row.get(
-                                            "frame_path"
-                                        )
-
-                                        if not isinstance(
-                                            original_relative_path, str
-                                        ):
-                                            st.warning(
-                                                "Original frame path is missing."
-                                            )
-                                            continue
-
-                                        original_path = Path(
-                                            original_relative_path
-                                        )
-
-                                        if not original_path.is_absolute():
-                                            original_path = (
-                                                PROJECT_DIR / original_path
-                                            )
-
+                                        # Find the source video for this detection
                                         video_row = connection.execute(
-                                            "SELECT video_name FROM videos "
-                                            "WHERE id = ?",
+                                            "SELECT video_name FROM videos WHERE id = ?",
                                             (int(row["video_id"]),)
                                         ).fetchone()
 
                                         if not video_row:
                                             st.warning(
-                                                "Video record not found for "
-                                                "this detection."
+                                                "Video record not found for this detection."
                                             )
                                             continue
 
-                                        video_stem = Path(
-                                            video_row[0]
-                                        ).stem
+                                        video_stem = Path(video_row[0]).stem
+
+                                        # Build the frame filename consistently.
+                                        # Example: frame index 288 -> frame_00000288.jpg
+                                        frame_index = int(row["frame_index"])
+                                        frame_name = f"frame_{frame_index:08d}.jpg"
+
+                                        original_path = (
+                                            DATA_DIR / "frames" / video_stem / frame_name
+                                        )
 
                                         annotated_path = (
-                                            DATA_DIR / "detections"
-                                            / video_stem
-                                            / original_path.name
+                                            DATA_DIR / "detections" / video_stem / frame_name
                                         )
 
                                         st.divider()
 
                                         st.markdown(
                                             f"**{str(row['object_class']).title()}** "
-                                            f"at {float(row['timestamp_seconds']):.2f} "
-                                            "seconds"
+                                            f"at {float(row['timestamp_seconds']):.2f} seconds"
                                         )
 
                                         st.write(
-                                            f"Confidence: "
-                                            f"{float(row['confidence']):.2%}"
+                                            f"Confidence: {float(row['confidence']):.2%}"
+                                        )
+
+                                        st.write(
+                                            f"Frame index: {frame_index}"
                                         )
 
                                         st.write(
@@ -414,9 +419,7 @@ with tab2:
                                         left, right = st.columns(2)
 
                                         with left:
-                                            st.markdown(
-                                                "**Original CCTV frame**"
-                                            )
+                                            st.markdown("**Original CCTV frame**")
 
                                             if original_path.exists():
                                                 st.image(
@@ -425,13 +428,11 @@ with tab2:
                                                 )
                                             else:
                                                 st.warning(
-                                                    "Original frame file not found."
+                                                    f"Original frame not found: {original_path}"
                                                 )
 
                                         with right:
-                                            st.markdown(
-                                                "**YOLO-annotated frame**"
-                                            )
+                                            st.markdown("**YOLO-annotated frame**")
 
                                             if annotated_path.exists():
                                                 st.image(
@@ -440,8 +441,7 @@ with tab2:
                                                 )
                                             else:
                                                 st.warning(
-                                                    "Annotated frame not found: "
-                                                    f"{annotated_path}"
+                                                    f"Annotated frame not found: {annotated_path}"
                                                 )
 
         except Exception as error:
@@ -487,6 +487,192 @@ with tab3:
 
         st.write("**Saved baseline SHA-256:**")
         st.code(baseline_hash)
+
+import sqlite3
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = PROJECT_DIR / "data" / "database" / "cctv_investigation.db"
+
+
+def get_videos():
+    """Return the video names stored in the investigation database."""
+    if not DB_PATH.exists():
+        return []
+
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT video_name FROM videos ORDER BY video_name"
+        ).fetchall()
+
+    return [row[0] for row in rows]
+
+
+def answer_question(question, video_name=None):
+    """Answer basic investigation questions using stored detections."""
+    if not DB_PATH.exists():
+        return "Database not found. Run the database import module first."
+
+    if not question or not question.strip():
+        return "Please enter an investigation question."
+
+    q = question.strip().lower()
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+
+            videos = conn.execute(
+                "SELECT id, video_name FROM videos ORDER BY video_name"
+            ).fetchall()
+
+            if not videos:
+                return "No videos found. Import detection files first."
+
+            sql_filter = ""
+            params = []
+
+            if video_name and video_name != "All videos":
+                sql_filter = " AND v.video_name = ?"
+                params.append(video_name)
+
+            # List videos
+            if any(term in q for term in (
+                "list videos", "which videos", "video names",
+                "available videos", "how many videos"
+            )):
+                selected = [
+                    v["video_name"] for v in videos
+                    if not video_name
+                    or video_name == "All videos"
+                    or v["video_name"] == video_name
+                ]
+                return (
+                    "Available videos:\n"
+                    + "\n".join(f"- {name}" for name in selected)
+                    if selected else "No matching videos found."
+                )
+
+            # Summary of detections
+            if any(term in q for term in (
+                "summary", "overview", "total detections",
+                "how many detections", "detection count",
+                "what is in the video", "what does the video contain"
+            )):
+                rows = conn.execute(
+                    """
+                    SELECT v.video_name, COUNT(d.id) AS total,
+                           COUNT(DISTINCT d.object_class) AS classes
+                    FROM videos v
+                    LEFT JOIN detections d ON d.video_id = v.id
+                    WHERE 1=1
+                    """ + sql_filter + """
+                    GROUP BY v.id, v.video_name
+                    ORDER BY v.video_name
+                    """,
+                    params
+                ).fetchall()
+
+                return "Detection summary:\n" + "\n".join(
+                    f"- {r['video_name']}: {r['total']} detections, "
+                    f"{r['classes']} object classes"
+                    for r in rows
+                )
+
+            # List object classes and their detection counts
+            if any(term in q for term in (
+                "object classes", "what objects", "which objects",
+                "detected objects", "classes detected"
+            )):
+                rows = conn.execute(
+                    """
+                    SELECT d.object_class, COUNT(*) AS total
+                    FROM detections d
+                    JOIN videos v ON v.id = d.video_id
+                    WHERE 1=1
+                    """ + sql_filter + """
+                    GROUP BY d.object_class
+                    ORDER BY total DESC
+                    """,
+                    params
+                ).fetchall()
+
+                if not rows:
+                    return "No detections found for this video."
+
+                return "Detected objects:\n" + "\n".join(
+                    f"- {r['object_class']}: {r['total']}"
+                    for r in rows
+                )
+
+            # Find an object class mentioned in the question
+            classes = conn.execute(
+                "SELECT DISTINCT object_class FROM detections ORDER BY object_class"
+            ).fetchall()
+
+            class_names = [r["object_class"] for r in classes]
+            selected_class = next(
+                (name for name in sorted(class_names, key=len, reverse=True)
+                 if name.lower() in q),
+                None
+            )
+
+            if selected_class:
+                rows = conn.execute(
+                    """
+                    SELECT v.video_name, d.timestamp_seconds, d.frame_index,
+                           d.confidence, d.frame_path
+                    FROM detections d
+                    JOIN videos v ON v.id = d.video_id
+                    WHERE LOWER(d.object_class) = LOWER(?)
+                    """ + sql_filter + """
+                    ORDER BY d.timestamp_seconds
+                    LIMIT 100
+                    """,
+                    [selected_class] + params
+                ).fetchall()
+
+                count = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM detections d
+                    JOIN videos v ON v.id = d.video_id
+                    WHERE LOWER(d.object_class) = LOWER(?)
+                    """ + sql_filter,
+                    [selected_class] + params
+                ).fetchone()[0]
+
+                if not count:
+                    return f"No '{selected_class}' detections found."
+
+                results = [
+                    f"Found {count} detections of '{selected_class}'.",
+                    "Showing up to 100 results:"
+                ]
+
+                for r in rows:
+                    results.append(
+                        f"- Video: {r['video_name']} | "
+                        f"Time: {r['timestamp_seconds']:.2f}s | "
+                        f"Frame: {r['frame_index']} | "
+                        f"Confidence: {r['confidence']:.2f}"
+                    )
+
+                return "\n".join(results)
+
+            return (
+                "I can search the detections stored in your database.\n\n"
+                "Try asking:\n"
+                "- List the available videos\n"
+                "- Give me a summary of all videos\n"
+                "- What objects were detected?\n"
+                "- How many persons were detected?\n"
+                "- Find cars in this video\n"
+            )
+
+    except sqlite3.Error as error:
+        
+
 
         # ------------------------------------------
         # VERIFY ORIGINAL VIDEO
@@ -659,128 +845,55 @@ with tab3:
   
 
 
+
 with tab4:
     st.header("AI Investigation Assistant")
 
     st.write(
-        "Ask questions about objects detected in your CCTV footage. "
-        "The system retrieves relevant events and supporting evidence."
+        "Ask questions about objects detected in your processed CCTV videos."
     )
 
-    question = st.text_input(
-        "Enter your investigation question",
-        placeholder="When does a person appear in the CCTV footage?"
-    )
+    available_videos = get_videos()
 
-    top_k = st.slider(
-        "Number of results",
-        min_value=1,
-        max_value=10,
-        value=5
-    )
+    if not available_videos:
+        st.warning(
+            "No videos found in the database. "
+            "Run python -m modules.database_manager first."
+        )
+    else:
+        selected_video = st.selectbox(
+            "Select CCTV video",
+            ["All videos"] + available_videos,
+            key="assistant_video"
+        )
 
-    if st.button("Search CCTV Events"):
-        if not question.strip():
-            st.warning("Please enter an investigation question.")
-        else:
-            try:
-                with st.spinner("Searching CCTV event records..."):
-                    results = search_events(question, top_k=top_k)
+        question = st.text_input(
+            "Enter your investigation question",
+            placeholder="Example: What objects were detected?",
+            key="assistant_question"
+        )
 
-                if not results:
-                    st.info("No matching events were retrieved.")
-                else:
-                    summary = generate_investigation_summary(question, results)
-
-                    st.subheader("Investigation Summary")
-                    st.text(summary)
-
-                    st.download_button(
-                        label="Download Investigation Summary",
-                        data=summary,
-                        file_name="investigation_summary.txt",
-                        mime="text/plain"
+        if st.button("Investigate", key="assistant_investigate"):
+            if not question.strip():
+                st.warning("Please enter an investigation question.")
+            else:
+                with st.spinner("Searching the CCTV database..."):
+                    result = answer_question(
+                        question,
+                        None if selected_video == "All videos"
+                        else selected_video
                     )
 
-                    st.divider()
+                st.subheader("Investigation Results")
+                st.text(result)
 
-                    st.subheader("Retrieved Evidence")
-                    st.caption(
-                        "Results are ranked by semantic similarity. "
-                        "Similarity is not the same as detection confidence."
-                    )
+                st.download_button(
+                    "Download Investigation Results",
+                    data=result,
+                    file_name="investigation_results.txt",
+                    mime="text/plain"
+                )
 
-                    for number, event in enumerate(results, start=1):
-                        with st.expander(
-                            f"Result {number}: "
-                            f"{event['object_class']} at "
-                            f"{event['timestamp_seconds']:.2f} seconds"
-                        ):
-                            st.write(
-                                f"**Video:** {event['video_name']}"
-                            )
-                            st.write(
-                                f"**Object:** {event['object_class']}"
-                            )
-                            st.write(
-                                f"**Timestamp:** "
-                                f"{event['timestamp_seconds']:.2f} seconds"
-                            )
-                            st.write(
-                                f"**Detection confidence:** "
-                                f"{event['confidence']:.2f}"
-                            )
-                            st.write(
-                                f"**Semantic similarity:** "
-                                f"{event['similarity']:.4f}"
-                            )
-                            st.write(
-                                f"**Frame number:** {event['frame_index']}"
-                            )
-
-                            frame_path = Path(event["frame_path"])
-
-                            if not frame_path.is_absolute():
-                                frame_path = PROJECT_DIR / frame_path
-
-                            if frame_path.exists():
-                                
-                                st.subheader("Visual Evidence")
-
-                                col1, col2 = st.columns(2)
-
-                                with col1:
-                                    st.image(
-                                        str(frame_path),
-                                        caption="Original Frame",
-                                        use_container_width=True
-                                    )
-
-                                with col2:
-                                    annotated_path = (
-                                        PROJECT_DIR
-                                        / "data"
-                                        / "detections"
-                                        / Path(event["frame_path"]).parent.name
-                                        / Path(event["frame_path"]).name
-                                    )
-
-                                    if annotated_path.exists():
-                                        st.image(
-                                            str(annotated_path),
-                                            caption="YOLO Detection Frame",
-                                            use_container_width=True
-                                        )
-                                    else:
-                                        st.warning("Annotated frame not found.")
-
-                            else:
-                                st.warning(
-                                    f"Frame image not found: {frame_path}"
-                                )
-
-            except Exception as error:
-                st.error(f"Investigation search failed: {error}")
           
 
 

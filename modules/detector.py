@@ -106,13 +106,32 @@ def detect_objects(record_path):
     return output_record
 
 
+
 if __name__ == "__main__":
-    record_files = sorted(EVIDENCE_DIR.glob("*_record.json"))
+    # Process only the three personal CCTV evidence records.
+    record_files = sorted(EVIDENCE_DIR.glob("cctv_*_record.json"))
 
     if not record_files:
-        print("No video evidence record found. Process a video first.")
+        print("No personal CCTV evidence records found.")
+        print("Run modules/video_processor.py first.")
     else:
-        try:
-            detect_objects(record_files[0])
-        except Exception as error:
-            print("Detection failed:", error)
+        print(f"Found {len(record_files)} personal CCTV video record(s).")
+
+        for record_path in record_files:
+            print("\n" + "=" * 55)
+            print("Processing evidence record:", record_path.name)
+            print("=" * 55)
+
+            try:
+                output_record = detect_objects(record_path)
+
+                print("\nDetection summary")
+                print("Video:", output_record["video_name"])
+                print("Frames processed:", output_record["frame_count"])
+                print("Objects detected:", output_record["detection_count"])
+
+            except Exception as error:
+                print("Detection failed for:", record_path.name)
+                print("Reason:", error)
+
+        print("\nFinished processing personal CCTV videos.")

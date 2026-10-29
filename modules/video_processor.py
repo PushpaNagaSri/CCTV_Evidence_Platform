@@ -105,27 +105,40 @@ def process_video(video_path, interval_seconds=2):
     return evidence_record, record_path
 
 
+
 if __name__ == "__main__":
+    # Process only your three personal CCTV videos.
+    # Keep the existing VIRAT sample separate.
     videos = sorted(
-        path for path in VIDEO_DIR.iterdir()
-        if path.suffix.lower() in {".mp4", ".avi", ".mov", ".mkv"}
+        path for path in VIDEO_DIR.glob("cctv_*.mp4")
+        if path.is_file()
     )
 
     if not videos:
-        print("No videos found. Put a CCTV video in data/videos/")
+        print("No personal CCTV videos found in data/videos/")
     else:
-        try:
-            record, record_path = process_video(videos[0])
+        print(f"Found {len(videos)} personal CCTV video(s).")
 
-            print("\nVIDEO PROCESSING COMPLETED")
-            print("-------------------------")
-            print("Video:", record["video_name"])
-            print("Duration:", record["duration_seconds"], "seconds")
-            print("FPS:", record["fps"])
-            print("Resolution:", record["resolution"])
-            print("Frames extracted:", record["extracted_frame_count"])
-            print("SHA-256:", record["sha256"])
-            print("Evidence record:", record_path)
+        for video_path in videos:
+            print("\n" + "=" * 50)
+            print("Processing:", video_path.name)
+            print("=" * 50)
 
-        except Exception as error:
-            print("Processing failed:", error)
+            try:
+                record, record_path = process_video(
+                    video_path,
+                    interval_seconds=1
+                )
+
+                print("Status: Completed")
+                print("Duration:", record["duration_seconds"], "seconds")
+                print("Resolution:", record["resolution"])
+                print("Frames extracted:", record["extracted_frame_count"])
+                print("SHA-256:", record["sha256"])
+                print("Evidence record:", record_path)
+
+            except Exception as error:
+                print("Processing failed:", video_path.name)
+                print("Reason:", error)
+
+        print("\nFinished processing personal CCTV videos.")
