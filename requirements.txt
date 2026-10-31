@@ -1,0 +1,9 @@
+# Requirements for AI-Powered CCTV Event Investigation and Digital Evidence Verification Platform
+# Recommended Python version: 3.11
+
+opencv-python
+ultralytics
+streamlit
+pandas
+sentence-transformers
+numpy

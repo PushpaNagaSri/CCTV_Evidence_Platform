@@ -109,67 +109,107 @@ def build_event_index():
 
 
 
-def search_events(question, top_k=5):
+
+def search_events(question, top_k=5, video_name=None):
     if not INDEX_PATH.exists() or not RECORDS_PATH.exists():
         raise FileNotFoundError(
             "RAG index not found. Run build_event_index() first."
         )
 
     with open(RECORDS_PATH, "r", encoding="utf-8") as file:
-        events = json.load(file)
+        all_events = json.load(file)
 
-    embeddings = np.load(INDEX_PATH)
+    all_embeddings = np.load(INDEX_PATH)
 
-    if len(events) != len(embeddings):
+    # Filter events by selected CCTV video before retrieval.
+    if video_name and video_name != "All videos":
+        selected_indices = [
+            i for i, event in enumerate(all_events)
+            if event["video_name"] == video_name
+        ]
+
+        all_events = [all_events[i] for i in selected_indices]
+        all_embeddings = all_embeddings[selected_indices]
+
+        if not all_events:
+            return []
+
+    if len(all_events) != len(all_embeddings):
         raise ValueError(
             "The event records and embeddings do not match. "
             "Rebuild the index."
         )
 
-    # Map common words to detector class names.
-    aliases = {
-        "person": ["person", "people", "human", "pedestrian"],
-        "car": ["car"],
-        "bicycle": ["bicycle", "bike"],
-        "motorcycle": ["motorcycle", "motorbike"],
-        "bus": ["bus"],
-        "truck": ["truck"],
-        "dog": ["dog"],
-        "cat": ["cat"],
-        "bird": ["bird"],
-    }
-
     question_lower = question.lower()
-    detected_classes = {
-        str(event["object_class"]).lower()
-        for event in events
+    words = set(question_lower.replace("-", " ").split())
+
+    
+    aliases = {
+        "person": {
+            "person", "people", "persons", "human", "humans",
+            "pedestrian", "pedestrians"
+        },
+        "backpack": {
+            "backpack", "backpacks", "rucksack", "rucksacks"
+        },
+        "bench": {"bench", "benches"},
+        "chair": {"chair", "chairs"},
+        "book": {"book", "books"},
+        "potted plant": {
+            "plant", "plants", "potted plant", "potted plants"
+        },
+        "car": {"car", "cars", "automobile", "automobiles"},
+        "bicycle": {"bicycle", "bicycles", "bike", "bikes"},
+        "motorcycle": {
+            "motorcycle", "motorcycles", "motorbike", "motorbikes"
+        },
+        "bus": {"bus", "buses"},
+        "truck": {"truck", "trucks"},
+        "dog": {"dog", "dogs"},
+        "cat": {"cat", "cats"},
+        "bird": {"bird", "birds"},
     }
 
-    # Identify whether the question explicitly asks about
-    # a known object category.
-    requested_class = None
 
-    for class_name, words in aliases.items():
+    # Detect explicitly requested object classes.
+    requested_classes = set()
+
+    for class_name, terms in aliases.items():
         if any(
-            word in question_lower.split()
-            for word in words
+            term in question_lower
+            for term in terms
         ):
-            requested_class = class_name
-            break
+            requested_classes.add(class_name)
 
-    # If the requested class is absent, return no matches.
-    if requested_class is not None:
+    # Match user-friendly names to actual detector class names.
+    def class_matches(actual_class, requested_class):
+        actual = actual_class.strip().lower()
+
+        if requested_class == "potted plant":
+            return actual in {"potted plant", "plant"}
+
+        return actual == requested_class
+
+    events = all_events
+    embeddings = all_embeddings
+
+    if requested_classes:
         matching_indices = [
-            i for i, event in enumerate(events)
-            if str(event["object_class"]).lower()
-            == requested_class
+            i for i, event in enumerate(all_events)
+            if any(
+                class_matches(
+                    str(event["object_class"]),
+                    requested_class
+                )
+                for requested_class in requested_classes
+            )
         ]
 
         if not matching_indices:
             return []
 
-        events = [events[i] for i in matching_indices]
-        embeddings = embeddings[matching_indices]
+        events = [all_events[i] for i in matching_indices]
+        embeddings = all_embeddings[matching_indices]
 
     model = load_embedding_model()
 
@@ -193,8 +233,11 @@ def search_events(question, top_k=5):
         )
         results.append(event)
 
-    return results
+    print("\nDEBUG - Retrieved object classes:")
+    for event in results:
+        print(repr(event["object_class"]), event["timestamp_seconds"])
 
+    return results
 
 
 def generate_investigation_summary(question, results):
@@ -274,3 +317,189 @@ if __name__ == "__main__":
             print(f"Similarity: {event['similarity']}")
             print(f"Description: {event['description']}")
 
+
+
+# import sqlite3
+# from pathlib import Path
+
+# PROJECT_DIR = Path(__file__).resolve().parent.parent
+# DB_PATH = PROJECT_DIR / "data" / "database" / "cctv_investigation.db"
+
+
+# def get_videos():
+#     """Return the video names stored in the investigation database."""
+#     if not DB_PATH.exists():
+#         return []
+
+#     with sqlite3.connect(DB_PATH) as conn:
+#         rows = conn.execute(
+#             "SELECT video_name FROM videos ORDER BY video_name"
+#         ).fetchall()
+
+#     return [row[0] for row in rows]
+
+
+# def answer_question(question, video_name=None):
+#     """Answer basic investigation questions using stored detections."""
+#     if not DB_PATH.exists():
+#         return "Database not found. Run the database import module first."
+
+#     if not question or not question.strip():
+#         return "Please enter an investigation question."
+
+#     q = question.strip().lower()
+
+#     try:
+#         with sqlite3.connect(DB_PATH) as conn:
+#             conn.row_factory = sqlite3.Row
+
+#             videos = conn.execute(
+#                 "SELECT id, video_name FROM videos ORDER BY video_name"
+#             ).fetchall()
+
+#             if not videos:
+#                 return "No videos found. Import detection files first."
+
+#             sql_filter = ""
+#             params = []
+
+#             if video_name and video_name != "All videos":
+#                 sql_filter = " AND v.video_name = ?"
+#                 params.append(video_name)
+
+#             # List videos
+#             if any(term in q for term in (
+#                 "list videos", "which videos", "video names",
+#                 "available videos", "how many videos"
+#             )):
+#                 selected = [
+#                     v["video_name"] for v in videos
+#                     if not video_name
+#                     or video_name == "All videos"
+#                     or v["video_name"] == video_name
+#                 ]
+#                 return (
+#                     "Available videos:\n"
+#                     + "\n".join(f"- {name}" for name in selected)
+#                     if selected else "No matching videos found."
+#                 )
+
+#             # Summary of detections
+#             if any(term in q for term in (
+#                 "summary", "overview", "total detections",
+#                 "how many detections", "detection count",
+#                 "what is in the video", "what does the video contain"
+#             )):
+#                 rows = conn.execute(
+#                     """
+#                     SELECT v.video_name, COUNT(d.id) AS total,
+#                            COUNT(DISTINCT d.object_class) AS classes
+#                     FROM videos v
+#                     LEFT JOIN detections d ON d.video_id = v.id
+#                     WHERE 1=1
+#                     """ + sql_filter + """
+#                     GROUP BY v.id, v.video_name
+#                     ORDER BY v.video_name
+#                     """,
+#                     params
+#                 ).fetchall()
+
+#                 return "Detection summary:\n" + "\n".join(
+#                     f"- {r['video_name']}: {r['total']} detections, "
+#                     f"{r['classes']} object classes"
+#                     for r in rows
+#                 )
+
+#             # List object classes and their detection counts
+#             if any(term in q for term in (
+#                 "object classes", "what objects", "which objects",
+#                 "detected objects", "classes detected"
+#             )):
+#                 rows = conn.execute(
+#                     """
+#                     SELECT d.object_class, COUNT(*) AS total
+#                     FROM detections d
+#                     JOIN videos v ON v.id = d.video_id
+#                     WHERE 1=1
+#                     """ + sql_filter + """
+#                     GROUP BY d.object_class
+#                     ORDER BY total DESC
+#                     """,
+#                     params
+#                 ).fetchall()
+
+#                 if not rows:
+#                     return "No detections found for this video."
+
+#                 return "Detected objects:\n" + "\n".join(
+#                     f"- {r['object_class']}: {r['total']}"
+#                     for r in rows
+#                 )
+
+#             # Find an object class mentioned in the question
+#             classes = conn.execute(
+#                 "SELECT DISTINCT object_class FROM detections ORDER BY object_class"
+#             ).fetchall()
+
+#             class_names = [r["object_class"] for r in classes]
+#             selected_class = next(
+#                 (name for name in sorted(class_names, key=len, reverse=True)
+#                  if name.lower() in q),
+#                 None
+#             )
+
+#             if selected_class:
+#                 rows = conn.execute(
+#                     """
+#                     SELECT v.video_name, d.timestamp_seconds, d.frame_index,
+#                            d.confidence, d.frame_path
+#                     FROM detections d
+#                     JOIN videos v ON v.id = d.video_id
+#                     WHERE LOWER(d.object_class) = LOWER(?)
+#                     """ + sql_filter + """
+#                     ORDER BY d.timestamp_seconds
+#                     LIMIT 100
+#                     """,
+#                     [selected_class] + params
+#                 ).fetchall()
+
+#                 count = conn.execute(
+#                     """
+#                     SELECT COUNT(*)
+#                     FROM detections d
+#                     JOIN videos v ON v.id = d.video_id
+#                     WHERE LOWER(d.object_class) = LOWER(?)
+#                     """ + sql_filter,
+#                     [selected_class] + params
+#                 ).fetchone()[0]
+
+#                 if not count:
+#                     return f"No '{selected_class}' detections found."
+
+#                 results = [
+#                     f"Found {count} detections of '{selected_class}'.",
+#                     "Showing up to 100 results:"
+#                 ]
+
+#                 for r in rows:
+#                     results.append(
+#                         f"- Video: {r['video_name']} | "
+#                         f"Time: {r['timestamp_seconds']:.2f}s | "
+#                         f"Frame: {r['frame_index']} | "
+#                         f"Confidence: {r['confidence']:.2f}"
+#                     )
+
+#                 return "\n".join(results)
+
+#             return (
+#                 "I can search the detections stored in your database.\n\n"
+#                 "Try asking:\n"
+#                 "- List the available videos\n"
+#                 "- Give me a summary of all videos\n"
+#                 "- What objects were detected?\n"
+#                 "- How many persons were detected?\n"
+#                 "- Find cars in this video\n"
+#             )
+
+#     except sqlite3.Error as error:
+#         return f"Database query failed: {error}"
