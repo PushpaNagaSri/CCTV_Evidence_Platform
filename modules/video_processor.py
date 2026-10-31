@@ -104,8 +104,6 @@ def process_video(video_path, interval_seconds=2):
 
     return evidence_record, record_path
 
-
-
 if __name__ == "__main__":
     # Process only your three personal CCTV videos.
     # Keep the existing VIRAT sample separate.
